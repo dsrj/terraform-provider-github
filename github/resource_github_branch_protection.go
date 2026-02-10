@@ -192,6 +192,37 @@ func resourceGithubBranchProtection() *schema.Resource {
 	}
 }
 
+//--manual insert start ----------
+func checkRepoExistsAndActiveV4(meta any, repoID string) (bool, error) {
+    var query struct {
+        Node struct {
+            Repository struct {
+                Archived bool
+            } `graphql:"... on Repository"`
+        } `graphql:"node(id: $id)"`
+    }
+
+    variables := map[string]any{
+        "id": githubv4.ID(repoID),
+    }
+
+    client := meta.(*Owner).v4client
+    err := client.Query(context.Background(), &query, variables)
+    if err != nil {
+        if strings.Contains(err.Error(), "Could not resolve to a node with the global id") {
+            return false, nil // repo deleted
+        }
+        return false, err
+    }
+
+    if query.Node.Repository.Archived {
+        return false, nil // repo archived
+    }
+
+    return true, nil
+}
+//--manual insert end ----------
+
 func resourceGithubBranchProtectionCreate(d *schema.ResourceData, meta any) error {
 	var mutate struct {
 		CreateBranchProtectionRule struct {
@@ -270,40 +301,20 @@ func resourceGithubBranchProtectionCreate(d *schema.ResourceData, meta any) erro
 	return resourceGithubBranchProtectionRead(d, meta)
 }
 
-//----------manual insert start----------
-func getRepositoryArchivedStatusByID(repoID string, meta any) (archived bool, err error) {
-    client := meta.(*Owner).v4client
-    ctx := context.Background()
-
-    var query struct {
-        Node struct {
-            Repository struct {
-                Archived bool
-                Name     string
-            } `graphql:"... on Repository"`
-        } `graphql:"node(id: $id)"`
-    }
-
-    variables := map[string]interface{}{
-        "id": githubv4.ID(repoID),
-    }
-
-    err = client.Query(ctx, &query, variables)
-    if err != nil {
-        return false, err
-    }
-
-    if query.Node.Repository.Name == "" {
-        // Repo does not exist
-        return false, fmt.Errorf("repo not found")
-    }
-
-    return query.Node.Repository.Archived, nil
-}
-
-//---manual insert end----------
-
 func resourceGithubBranchProtectionRead(d *schema.ResourceData, meta any) error {
+	//--manual insert start ----------
+	repoID := d.Get(REPOSITORY_ID).(string)
+	exists, err := checkRepoExistsAndActiveV4(meta, repoID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		log.Printf("[INFO] Removing branch protection (%s) from state because repository %s no longer exists or is archived", d.Id(), repoID)
+		d.SetId("")
+		return nil
+	}
+	//--manual insert end ----------
+
 	var query struct {
 		Node struct {
 			Node BranchProtectionRule `graphql:"... on BranchProtectionRule"`
@@ -314,27 +325,6 @@ func resourceGithubBranchProtectionRead(d *schema.ResourceData, meta any) error 
 	}
 	ctx := context.WithValue(context.Background(), ctxId, d.Id())
 	client := meta.(*Owner).v4client
-
-//----------manual insert start----------
-// --- CHECK REPO DELETED OR ARCHIVED ---
-repoID := d.Get("repository_id").(string)
-
-// Check if repository exists and is archived
-archived, err := getRepositoryArchivedStatusByID(repoID, meta)
-if err != nil {
-    log.Printf("[INFO] Removing branch protection (%s) from state because repository no longer exists or cannot be queried", d.Id())
-    d.SetId("")
-    return nil
-}
-
-if archived {
-    log.Printf("[INFO] Removing branch protection (%s) from state because repository %s is archived", d.Id(), repoID)
-    d.SetId("")
-    return nil
-}
-
-//----------manual insert end----------
-
 	err = client.Query(ctx, &query, variables)
 	if err != nil {
 		if strings.Contains(err.Error(), "Could not resolve to a node with the global id") {
@@ -420,6 +410,18 @@ if archived {
 }
 
 func resourceGithubBranchProtectionUpdate(d *schema.ResourceData, meta any) error {
+		//---------- manual insert start ----------
+		repoID := d.Get(REPOSITORY_ID).(string)
+	exists, err := checkRepoExistsAndActiveV4(meta, repoID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		log.Printf("[INFO] Removing branch protection (%s) from state because repository %s no longer exists or is archived", d.Id(), repoID)
+		d.SetId("")
+		return nil
+	}
+	//---------- manual insert end ----------
 	var mutate struct {
 		UpdateBranchProtectionRule struct {
 			BranchProtectionRule struct {
@@ -498,6 +500,18 @@ func resourceGithubBranchProtectionUpdate(d *schema.ResourceData, meta any) erro
 }
 
 func resourceGithubBranchProtectionDelete(d *schema.ResourceData, meta any) error {
+		//---------- manual insert start ----------
+		repoID := d.Get(REPOSITORY_ID).(string)
+	exists, err := checkRepoExistsAndActiveV4(meta, repoID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		log.Printf("[INFO] Removing branch protection (%s) from state because repository %s no longer exists or is archived", d.Id(), repoID)
+		d.SetId("")
+		return nil
+	}
+	//---------- manual insert end ----------
 	var mutate struct {
 		DeleteBranchProtectionRule struct { // Empty struct does not work
 			ClientMutationId githubv4.ID
@@ -509,7 +523,7 @@ func resourceGithubBranchProtectionDelete(d *schema.ResourceData, meta any) erro
 
 	ctx := context.WithValue(context.Background(), ctxId, d.Id())
 	client := meta.(*Owner).v4client
-	err := client.Mutate(ctx, &mutate, input, nil)
+	err = client.Mutate(ctx, &mutate, input, nil)
 
 	return err
 }

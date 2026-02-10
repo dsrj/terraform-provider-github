@@ -291,7 +291,25 @@ func resourceGithubActionsSecretUpdate(ctx context.Context, d *schema.ResourceDa
 		KeyID:          keyID,
 		EncryptedValue: encryptedValue,
 	}
+//---------- manual insert start ----------
+// In Update & Delete, before doing any API call:
+repo, _, repoErr := client.Repositories.Get(ctx, owner, repoName)
+if repoErr != nil {
+    var ghErr *github.ErrorResponse
+    if errors.As(repoErr, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound {
+        log.Printf("[INFO] Removing actions secret %s from state because repository %s no longer exists", d.Id(), repoName)
+        d.SetId("")
+        return nil
+    }
+    return diag.FromErr(repoErr)
+}
 
+if repo.GetArchived() {
+    log.Printf("[INFO] Removing actions secret %s from state because repository %s is archived", d.Id(), repoName)
+    d.SetId("")
+    return nil
+}
+//--- manual insert end ----------
 	_, err := client.Actions.CreateOrUpdateRepoSecret(ctx, owner, repoName, &secret)
 	if err != nil {
 		return diag.FromErr(err)
@@ -337,7 +355,26 @@ func resourceGithubActionsSecretDelete(ctx context.Context, d *schema.ResourceDa
 
 	repoName := d.Get("repository").(string)
 	secretName := d.Get("secret_name").(string)
+//---------- manual insert start ----------
 
+// In Update & Delete, before doing any API call:
+repo, _, repoErr := client.Repositories.Get(ctx, owner, repoName)
+if repoErr != nil {
+    var ghErr *github.ErrorResponse
+    if errors.As(repoErr, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound {
+        log.Printf("[INFO] Removing actions secret %s from state because repository %s no longer exists", d.Id(), repoName)
+        d.SetId("")
+        return nil
+    }
+    return diag.FromErr(repoErr)
+}
+
+if repo.GetArchived() {
+    log.Printf("[INFO] Removing actions secret %s from state because repository %s is archived", d.Id(), repoName)
+    d.SetId("")
+    return nil
+}
+//------ manual insert end ----------
 	log.Printf("[INFO] Deleting actions repo secret: %s", d.Id())
 	_, err := client.Actions.DeleteRepoSecret(ctx, owner, repoName, secretName)
 	if err != nil {

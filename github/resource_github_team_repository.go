@@ -125,20 +125,22 @@ func resourceGithubTeamRepositoryRead(d *schema.ResourceData, meta any) error {
 	}
 
 // ---------- manual insert start ----------
-	// 1️⃣ Check if repository exists
-	repo, resp, _ := client.Repositories.Get(ctx, orgName, repoName)
-	if resp == nil || resp.StatusCode == 404 {
-		log.Printf("[INFO] Removing team repository %s from state because repository %s does not exist", d.Id(), repoName)
-		d.SetId("") // delete from state
-		return nil
-	}
+repo, _, repoErr := client.Repositories.Get(ctx, orgName, repoName)
+if repoErr != nil {
+    var ghErr *github.ErrorResponse
+    if errors.As(repoErr, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound {
+        log.Printf("[INFO] Removing team repository %s from state because repository %s does not exist", d.Id(), repoName)
+        d.SetId("")
+        return nil
+    }
+    return repoErr
+}
 
-	// 2️⃣ Check if repository is archived
-	if repo.GetArchived() {
-		log.Printf("[INFO] Removing team repository %s from state because repository %s is archived", d.Id(), repoName)
-		d.SetId("") // delete from state
-		return nil
-	}
+if repo.GetArchived() {
+    log.Printf("[INFO] Removing team repository %s from state because repository %s is archived", d.Id(), repoName)
+    d.SetId("")
+    return nil
+}
 	// ---------- manual insert end ----------
 
 
@@ -200,6 +202,27 @@ func resourceGithubTeamRepositoryUpdate(d *schema.ResourceData, meta any) error 
 	permission := d.Get("permission").(string)
 	ctx := context.WithValue(context.Background(), ctxId, d.Id())
 
+//---------- manual insert start ----------
+// 1️⃣ Check if repository exists
+repo, _, repoErr := client.Repositories.Get(ctx, orgName, repoName)
+if repoErr != nil {
+    var ghErr *github.ErrorResponse
+    if errors.As(repoErr, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound {
+        log.Printf("[INFO] Removing team repository %s from state because repository %s does not exist", d.Id(), repoName)
+        d.SetId("") // remove from state
+        return nil
+    }
+    return repoErr
+}
+
+// 2️⃣ Check if repository is archived
+if repo.GetArchived() {
+    log.Printf("[INFO] Removing team repository %s from state because repository %s is archived", d.Id(), repoName)
+    d.SetId("") // remove from state
+    return nil
+}
+//---------- manual insert end ----------
+
 	// the go-github library's AddTeamRepo method uses the add/update endpoint from GitHub API
 	_, err = client.Teams.AddTeamRepoByID(ctx,
 		orgId,
@@ -227,6 +250,8 @@ func resourceGithubTeamRepositoryDelete(d *schema.ResourceData, meta any) error 
 	client := meta.(*Owner).v3client
 	orgId := meta.(*Owner).id
 
+
+	
 	teamIdString, repoName, err := parseTwoPartID(d.Id(), "team_id", "repository")
 	if err != nil {
 		return err
@@ -239,6 +264,24 @@ func resourceGithubTeamRepositoryDelete(d *schema.ResourceData, meta any) error 
 	ctx := context.WithValue(context.Background(), ctxId, d.Id())
 
 	resp, err := client.Teams.RemoveTeamRepoByID(ctx, orgId, teamId, orgName, repoName)
+
+	//---------- manual insert start ----------
+	repo, _, repoErr := client.Repositories.Get(ctx, orgName, repoName)
+	if repoErr != nil {
+		if ghErr, ok := repoErr.(*github.ErrorResponse); ok && ghErr.Response.StatusCode == http.StatusNotFound {
+			log.Printf("[INFO] Removing team repository %s from state because repository %s does not exist", d.Id(), repoName)
+			d.SetId("")
+			return nil
+		}
+		return repoErr
+	}
+
+	if repo.GetArchived() {
+		log.Printf("[INFO] Removing team repository %s from state because repository %s is archived", d.Id(), repoName)
+		d.SetId("")
+		return nil
+	}
+	//---------- manual insert end ----------
 
 	if resp.StatusCode == 404 {
 		log.Printf("[DEBUG] Failed to find team %s to delete for repo: %s.", teamIdString, repoName)

@@ -233,6 +233,25 @@ func resourceGithubRepositoryEnvironmentUpdate(ctx context.Context, d *schema.Re
 	envName := d.Get("environment").(string)
 	updateData := createUpdateEnvironmentData(d)
 
+	// ---------- manual insert start ----------
+
+	// Check if repository exists
+	repo, resp, _ := client.Repositories.Get(ctx, owner, repoName)
+	if resp == nil || resp.StatusCode == 404 {
+		log.Printf("[INFO] Removing repository environment %s from state because repository %s does not exist", repoName, envName)
+		d.SetId("") // delete from state
+		return nil
+	}
+
+	// Check if repository is archived
+	if repo.GetArchived() {
+		log.Printf("[INFO] Removing repository environment %s from state because repository %s is archived", repoName, envName)
+		d.SetId("") // delete from state
+		return nil
+	}
+
+	// ---------- manual insert end ----------
+
 	_, _, err := client.Repositories.CreateUpdateEnvironment(ctx, owner, repoName, url.PathEscape(envName), &updateData)
 	if err != nil {
 		return diag.FromErr(err)
@@ -257,6 +276,25 @@ func resourceGithubRepositoryEnvironmentDelete(ctx context.Context, d *schema.Re
 	}
 
 	envName := unescapeIDPart(envNamePart)
+
+	// ---------- manual insert start ----------
+
+	// Check if repository exists
+	repo, resp, _ := client.Repositories.Get(ctx, owner, repoName)
+	if resp == nil || resp.StatusCode == 404 {
+		log.Printf("[INFO] Removing repository environment %s from state because repository %s does not exist", repoName, envName)
+		d.SetId("") // delete from state
+		return nil
+	}
+
+	// Check if repository is archived
+	if repo.GetArchived() {
+		log.Printf("[INFO] Removing repository environment %s from state because repository %s is archived", repoName, envName)
+		d.SetId("") // delete from state
+		return nil
+	}
+
+	// ---------- manual insert end ----------
 
 	_, err = client.Repositories.DeleteEnvironment(ctx, owner, repoName, url.PathEscape(envName))
 	if err != nil {

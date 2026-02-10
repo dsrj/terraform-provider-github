@@ -820,15 +820,28 @@ func resourceGithubRepositoryRulesetUpdate(ctx context.Context, d *schema.Resour
 		return diag.FromErr(unconvertibleIdErr(d.Id(), err))
 	}
 
+	
+//-----manual---insert starts
 	// Check if repository is archived - skip update if it is
 	repo, _, err := client.Repositories.Get(ctx, owner, repoName)
 	if err != nil {
-		return diag.FromErr(err)
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
+			tflog.Info(ctx, "Repository not found, removing ruleset from state", map[string]any{
+				"owner":     owner,
+				"repo_name": repoName,
+			})
+			d.SetId("")
+			return nil
+		}
+		return diag.FromErr(err) // other errors stay
 	}
+
 	if repo.GetArchived() {
 		tflog.Info(ctx, "Repository is archived, skipping ruleset update", map[string]any{"owner": owner, "repo_name": repoName})
 		return nil
 	}
+	//-----manual---insert ends
 
 	ruleset, resp, err := client.Repositories.UpdateRuleset(ctx, owner, repoName, rulesetID, rulesetReq)
 	if err != nil {
@@ -857,7 +870,19 @@ func resourceGithubRepositoryRulesetDelete(ctx context.Context, d *schema.Resour
 	if err != nil {
 		return diag.FromErr(unconvertibleIdErr(d.Id(), err))
 	}
-
+	//--manual--insert starts
+		repo, _, err := client.Repositories.Get(ctx, owner, repoName)
+	if err != nil || repo == nil {
+		tflog.Info(ctx, "Repository not found, removing ruleset from state", map[string]any{"owner": owner, "repo_name": repoName})
+		d.SetId("") // repo deleted → remove from state
+		return nil
+	}
+	if repo.GetArchived() {
+		tflog.Info(ctx, "Repository is archived, removing ruleset from state", map[string]any{"owner": owner, "repo_name": repoName})
+		d.SetId("") // repo archived → remove from state
+		return nil
+	}
+	//--manual--insert ends
 	tflog.Debug(ctx, "Deleting repository ruleset", map[string]any{"owner": owner, "repo_name": repoName, "ruleset_id": rulesetID})
 	_, err = client.Repositories.DeleteRuleset(ctx, owner, repoName, rulesetID)
 	return diag.FromErr(handleArchivedRepoDelete(err, "repository ruleset", strconv.FormatInt(rulesetID, 10), owner, repoName))
@@ -878,6 +903,7 @@ func resourceGithubRepositoryRulesetImport(ctx context.Context, d *schema.Resour
 	}
 	client := meta.(*Owner).v3client
 	owner := meta.(*Owner).name
+
 
 	tflog.Debug(ctx, "Importing repository ruleset", map[string]any{"owner": owner, "repo_name": repoName, "ruleset_id": rulesetID})
 
