@@ -132,6 +132,26 @@ func resourceGithubRepositoryEnvironmentRead(ctx context.Context, d *schema.Reso
 
 	envName := unescapeIDPart(envNamePart)
 
+
+	// ---------- manual insert start ----------
+
+		// 1️⃣ Check if repository exists
+	repo, resp, _ := client.Repositories.Get(ctx, owner, repoName)
+	if resp == nil || resp.StatusCode == 404 {
+		log.Printf("[INFO] Removing repository environment %s from state because repository %s does not exist", d.Id(), repoName)
+		d.SetId("") // delete from state
+		return nil
+	}
+
+	// 2️⃣ Check if repository is archived
+	if repo.GetArchived() {
+		log.Printf("[INFO] Removing repository environment %s from state because repository %s is archived", d.Id(), repoName)
+		d.SetId("") // delete from state
+		return nil
+	}
+
+	// ---------- manual insert end ----------
+
 	env, _, err := client.Repositories.GetEnvironment(ctx, owner, repoName, url.PathEscape(envName))
 	if err != nil {
 		var ghErr *github.ErrorResponse

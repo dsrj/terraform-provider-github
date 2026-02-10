@@ -270,6 +270,39 @@ func resourceGithubBranchProtectionCreate(d *schema.ResourceData, meta any) erro
 	return resourceGithubBranchProtectionRead(d, meta)
 }
 
+//----------manual insert start----------
+func getRepositoryArchivedStatusByID(repoID string, meta any) (archived bool, err error) {
+    client := meta.(*Owner).v4client
+    ctx := context.Background()
+
+    var query struct {
+        Node struct {
+            Repository struct {
+                Archived bool
+                Name     string
+            } `graphql:"... on Repository"`
+        } `graphql:"node(id: $id)"`
+    }
+
+    variables := map[string]interface{}{
+        "id": githubv4.ID(repoID),
+    }
+
+    err = client.Query(ctx, &query, variables)
+    if err != nil {
+        return false, err
+    }
+
+    if query.Node.Repository.Name == "" {
+        // Repo does not exist
+        return false, fmt.Errorf("repo not found")
+    }
+
+    return query.Node.Repository.Archived, nil
+}
+
+//---manual insert end----------
+
 func resourceGithubBranchProtectionRead(d *schema.ResourceData, meta any) error {
 	var query struct {
 		Node struct {
@@ -281,7 +314,28 @@ func resourceGithubBranchProtectionRead(d *schema.ResourceData, meta any) error 
 	}
 	ctx := context.WithValue(context.Background(), ctxId, d.Id())
 	client := meta.(*Owner).v4client
-	err := client.Query(ctx, &query, variables)
+
+//----------manual insert start----------
+// --- CHECK REPO DELETED OR ARCHIVED ---
+repoID := d.Get("repository_id").(string)
+
+// Check if repository exists and is archived
+archived, err := getRepositoryArchivedStatusByID(repoID, meta)
+if err != nil {
+    log.Printf("[INFO] Removing branch protection (%s) from state because repository no longer exists or cannot be queried", d.Id())
+    d.SetId("")
+    return nil
+}
+
+if archived {
+    log.Printf("[INFO] Removing branch protection (%s) from state because repository %s is archived", d.Id(), repoID)
+    d.SetId("")
+    return nil
+}
+
+//----------manual insert end----------
+
+	err = client.Query(ctx, &query, variables)
 	if err != nil {
 		if strings.Contains(err.Error(), "Could not resolve to a node with the global id") {
 			log.Printf("[INFO] Removing branch protection (%s) from state because it no longer exists in GitHub", d.Id())

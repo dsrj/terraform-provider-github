@@ -192,6 +192,31 @@ func resourceGithubActionsSecretRead(ctx context.Context, d *schema.ResourceData
 	repoName := d.Get("repository").(string)
 	secretName := d.Get("secret_name").(string)
 
+	//---------- manual insert start ----------
+
+// Check if repository exists
+	repo, _, err := client.Repositories.Get(ctx, owner, repoName)
+	if err != nil {
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) {
+			if ghErr.Response.StatusCode == http.StatusNotFound {
+				log.Printf("[INFO] Removing actions secret %s from state because repository %s no longer exists", d.Id(), repoName)
+				d.SetId("")
+				return nil
+			}
+		}
+		return diag.FromErr(err)
+	}
+
+	// Check if repository is archived
+	if repo.GetArchived() {
+		log.Printf("[INFO] Removing actions secret %s from state because repository %s is archived", d.Id(), repoName)
+		d.SetId("")
+		return nil
+	}
+
+	//---------- manual insert end ----------
+
 	secret, _, err := client.Actions.GetRepoSecret(ctx, owner, repoName, secretName)
 	if err != nil {
 		var ghErr *github.ErrorResponse

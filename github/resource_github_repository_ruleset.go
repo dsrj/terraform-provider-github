@@ -734,7 +734,22 @@ func resourceGithubRepositoryRulesetRead(ctx context.Context, d *schema.Resource
 	if err != nil {
 		return diag.FromErr(unconvertibleIdErr(d.Id(), err))
 	}
+//--------manual---insert starts
+	// First: check if repository exists
+	repo, _, err := client.Repositories.Get(ctx, owner, repoName)
+	if err != nil || repo == nil {
+		tflog.Info(ctx, "Repository not found, removing ruleset from state", map[string]any{"owner": owner, "repo_name": repoName})
+		d.SetId("") // repo deleted → remove from state
+		return nil
+	}
 
+	// Second: check if repository is archived
+	if repo.GetArchived() {
+		tflog.Info(ctx, "Repository is archived, removing ruleset from state", map[string]any{"owner": owner, "repo_name": repoName})
+		d.SetId("") // repo archived → remove from state
+		return nil
+	}
+//--------manual---insert ends
 	if !d.IsNewResource() {
 		ctx = context.WithValue(ctx, ctxEtag, d.Get("etag").(string))
 	}

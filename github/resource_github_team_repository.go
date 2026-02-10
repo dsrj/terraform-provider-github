@@ -124,6 +124,24 @@ func resourceGithubTeamRepositoryRead(d *schema.ResourceData, meta any) error {
 		ctx = context.WithValue(ctx, ctxEtag, d.Get("etag").(string))
 	}
 
+// ---------- manual insert start ----------
+	// 1️⃣ Check if repository exists
+	repo, resp, _ := client.Repositories.Get(ctx, orgName, repoName)
+	if resp == nil || resp.StatusCode == 404 {
+		log.Printf("[INFO] Removing team repository %s from state because repository %s does not exist", d.Id(), repoName)
+		d.SetId("") // delete from state
+		return nil
+	}
+
+	// 2️⃣ Check if repository is archived
+	if repo.GetArchived() {
+		log.Printf("[INFO] Removing team repository %s from state because repository %s is archived", d.Id(), repoName)
+		d.SetId("") // delete from state
+		return nil
+	}
+	// ---------- manual insert end ----------
+
+
 	repo, resp, repoErr := client.Teams.IsTeamRepoByID(ctx, orgId, teamId, orgName, repoName)
 	if repoErr != nil {
 		var ghErr *github.ErrorResponse
