@@ -194,39 +194,41 @@ func resourceGithubBranchProtection() *schema.Resource {
 
 //--manual insert start ----------
 func checkRepoExistsAndActiveV4(meta any, repoID string) (bool, error) {
-    // GraphQL query structure
-    var query struct {
-        Node struct {
-            Typename githubv4.String
-            // Only repositories have Archived field
-            Archived githubv4.Boolean `graphql:"archived"`
-        } `graphql:"node(id: $id)"`
-    }
+	var query struct {
+		Node struct {
+			Typename   githubv4.String `graphql:"__typename"`
+			Repository struct {
+				IsArchived githubv4.Boolean `graphql:"isArchived"`
+			} `graphql:"... on Repository"`
+		} `graphql:"node(id: $id)"`
+	}
 
-    variables := map[string]any{
-        "id": githubv4.ID(repoID),
-    }
+	variables := map[string]interface{}{
+		"id": githubv4.ID(repoID),
+	}
 
-    client := meta.(*Owner).v4client
-    err := client.Query(context.Background(), &query, variables)
-    if err != nil {
-        if strings.Contains(err.Error(), "Could not resolve to a node with the global id") {
-            return false, nil // repo deleted
-        }
-        return false, err
-    }
+	client := meta.(*Owner).v4client
 
-    // Check if the node is actually a repository
-    if query.Node.Typename != "Repository" {
-        return false, fmt.Errorf("node %s is not a repository", repoID)
-    }
+	err := client.Query(context.Background(), &query, variables)
+	if err != nil {
+		if strings.Contains(err.Error(), "Could not resolve to a node with the global id") ||
+			strings.Contains(err.Error(), "not found") { // sometimes GitHub varies wording
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to query repository node %s: %w", repoID, err)
+	}
 
-    // Check if repo is archived
-    if query.Node.Archived {
-        return false, nil // repo archived
-    }
+	// Node doesn't exist at all or isn't a Repository
+	if query.Node.Typename != "Repository" {
+		return false, nil
+	}
 
-    return true, nil
+	// Repository exists → check archived status
+	if query.Node.Repository.IsArchived {
+		return false, nil
+	}
+
+	return true, nil
 }
 //--manual insert end ----------
 
