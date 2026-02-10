@@ -197,26 +197,40 @@ func resourceGithubActionsEnvironmentSecretRead(ctx context.Context, d *schema.R
 // ---------- manual insert start ----------
 
 // 1️⃣ Check if repository exists and is not archived
-repo, resp, _ := client.Repositories.Get(ctx, meta.name, repoName)
-if resp == nil || resp.StatusCode == 404 || (repo != nil && repo.GetArchived()) {
-    log.Printf("[INFO] Removing environment secret %s from state because repository %s does not exist or is archived", d.Id(), repoName)
-    d.SetId("") // delete from state
+repo, _, err := client.Repositories.Get(ctx, meta.name, repoName)
+if err != nil {
+    var ghErr *github.ErrorResponse
+    if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
+        log.Printf("[INFO] Removing environment secret %s from state because repository %s does not exist", d.Id(), repoName)
+        d.SetId("")
+        return nil
+    }
+    return diag.FromErr(err)
+}
+
+if repo.GetArchived() {
+    log.Printf("[INFO] Removing environment secret %s from state because repository %s is archived", d.Id(), repoName)
+    d.SetId("")
     return nil
 }
 
-// 2️⃣ Get repository ID for later use (reuse existing variable)
-if repo != nil {
-    repoID = int(repo.GetID()) // NOTE: no := here
-}
+repoID = int(repo.GetID()) // keep using existing variable
+
+
 
 // 3️⃣ Check if environment exists by listing secrets
-_, resp, _ = client.Actions.ListEnvSecrets(ctx, repoID, envName, &github.ListOptions{PerPage: 1})
-if resp == nil || resp.StatusCode == 404 {
-    log.Printf("[INFO] Removing environment secret %s from state because environment %s does not exist", d.Id(), envName)
-    d.SetId("") // delete from state
-    return nil
-}
+escapedEnv := url.PathEscape(envName)
 
+_, _, err = client.Actions.ListEnvSecrets(ctx, repoID, escapedEnv, &github.ListOptions{PerPage: 1})
+if err != nil {
+    var ghErr *github.ErrorResponse
+    if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
+        log.Printf("[INFO] Removing environment secret %s from state because environment %s does not exist", d.Id(), envName)
+        d.SetId("")
+        return nil
+    }
+    return diag.FromErr(err)
+}
 // ---------- manual insert end ----------
 
 	secret, _, err := client.Actions.GetEnvSecret(ctx, repoID, url.PathEscape(envName), secretName)
@@ -270,6 +284,42 @@ func resourceGithubActionsEnvironmentSecretUpdate(ctx context.Context, d *schema
 
 	escapedEnvName := url.PathEscape(envName)
 
+		// ---------- MANUAL INSERT START ----------
+	// 1️⃣ Check if repository exists and is not archived
+	repo, _, err := client.Repositories.Get(ctx, meta.name, repoName)
+	if err != nil {
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
+			log.Printf("[INFO] Removing environment secret %s from state because repository %s does not exist", d.Id(), repoName)
+			d.SetId("")
+			return nil
+		}
+		return diag.FromErr(err)
+	}
+
+	if repo.GetArchived() {
+		log.Printf("[INFO] Removing environment secret %s from state because repository %s is archived", d.Id(), repoName)
+		d.SetId("")
+		return nil
+	}
+
+	repoID = int(repo.GetID())
+	_ = d.Set("repository_id", repoID) // <-- Add this line to update repository_id in case it
+
+	// 2️⃣ Check if environment exists
+	escapedEnv := url.PathEscape(envName)
+	_, _, err = client.Actions.ListEnvSecrets(ctx, repoID, escapedEnv, &github.ListOptions{PerPage: 1})
+	if err != nil {
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
+			log.Printf("[INFO] Removing environment secret %s from state because environment %s does not exist", d.Id(), envName)
+			d.SetId("")
+			return nil
+		}
+		return diag.FromErr(err)
+	}
+	// ---------- MANUAL INSERT END ----------
+
 	var publicKey string
 	if len(keyID) == 0 || len(encryptedValue) == 0 {
 		ki, pk, err := getEnvironmentPublicKeyDetails(ctx, meta, repoID, escapedEnvName)
@@ -297,7 +347,7 @@ func resourceGithubActionsEnvironmentSecretUpdate(ctx context.Context, d *schema
 		EncryptedValue: encryptedValue,
 	}
 
-	_, err := client.Actions.CreateOrUpdateEnvSecret(ctx, repoID, escapedEnvName, &secret)
+	_, err = client.Actions.CreateOrUpdateEnvSecret(ctx, repoID, escapedEnvName, &secret)
 	if err != nil {
 		return diag.FromErr(err)
 	}
@@ -344,11 +394,17 @@ func resourceGithubActionsEnvironmentSecretDelete(ctx context.Context, d *schema
 	secretName := d.Get("secret_name").(string)
 
 	log.Printf("[INFO] Deleting actions environment secret: %s", d.Id())
+	//replace with manual insert to handle 404s gracefully and remove from state if already deleted
 	_, err := client.Actions.DeleteEnvSecret(ctx, repoID, url.PathEscape(envName), secretName)
-	if err != nil {
-		return diag.FromErr(err)
-	}
-
+if err != nil {
+    var ghErr *github.ErrorResponse
+    if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
+        log.Printf("[INFO] Environment secret %s already deleted", d.Id())
+        d.SetId("")
+        return nil
+    }
+    return diag.FromErr(err)
+}//manual
 	return nil
 }
 
