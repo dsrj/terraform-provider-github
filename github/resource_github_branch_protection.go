@@ -194,11 +194,12 @@ func resourceGithubBranchProtection() *schema.Resource {
 
 //--manual insert start ----------
 func checkRepoExistsAndActiveV4(meta any, repoID string) (bool, error) {
+    // GraphQL query structure
     var query struct {
         Node struct {
-            Repository struct {
-                Archived githubv4.Boolean
-            } `graphql:"... on Repository"`
+            Typename githubv4.String
+            // Only repositories have Archived field
+            Archived githubv4.Boolean `graphql:"archived"`
         } `graphql:"node(id: $id)"`
     }
 
@@ -215,7 +216,13 @@ func checkRepoExistsAndActiveV4(meta any, repoID string) (bool, error) {
         return false, err
     }
 
-    if query.Node.Repository.Archived {
+    // Check if the node is actually a repository
+    if query.Node.Typename != "Repository" {
+        return false, fmt.Errorf("node %s is not a repository", repoID)
+    }
+
+    // Check if repo is archived
+    if query.Node.Archived {
         return false, nil // repo archived
     }
 
