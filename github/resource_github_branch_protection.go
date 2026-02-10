@@ -197,7 +197,7 @@ func checkRepoExistsAndActiveV4(meta any, repoID string) (bool, error) {
     var query struct {
         Node struct {
             Repository struct {
-                Archived bool
+                Archived githubv4.Boolean
             } `graphql:"... on Repository"`
         } `graphql:"node(id: $id)"`
     }
