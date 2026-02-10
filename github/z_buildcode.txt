@@ -1,0 +1,2 @@
+GOOS=linux GOARCH=amd64 go build -o terraform-provider-github-linux
+GOOS=windows GOARCH=amd64 go build -o terraform-provider-github-win
