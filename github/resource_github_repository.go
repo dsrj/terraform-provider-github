@@ -775,139 +775,109 @@ func resourceGithubRepositoryCreate(ctx context.Context, d *schema.ResourceData,
 	return resourceGithubRepositoryUpdate(ctx, d, meta)
 }
 
-func resourceGithubRepositoryRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
-	client := meta.(*Owner).v3client
+// resourceGithubRepositoryRead fetches the repository from cache (or GitHub if not cached)
+// and updates the Terraform state with the latest information. If the repository no longer exists, it removes it from the state.
+// It also handles setting all the relevant fields in the state, including fork and template information if applicable.
+// If the repository is not found, it removes it from the state. If there is an error fetching the repository, it returns the error.
+//replaced original read function with new one that uses cache and handles not found error by removing from state instead of returning an error
 
-	owner := meta.(*Owner).name
+func resourceGithubRepositoryRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	o := meta.(*Owner)
+	owner := o.name
 	repoName := d.Id()
 
-	// When the user has not authenticated the provider, AnonymousHTTPClient is used, therefore owner == "". In this
-	// case lookup the owner in the data, and use that, if present.
+	// If provider unauthenticated, use owner from state
 	if explicitOwner, _, ok := resourceGithubParseFullName(d); ok && owner == "" {
 		owner = explicitOwner
 	}
 
-	ctx = context.WithValue(ctx, ctxId, d.Id())
-	if !d.IsNewResource() {
-		ctx = context.WithValue(ctx, ctxEtag, d.Get("etag").(string))
-	}
-
-	repo, resp, err := client.Repositories.Get(ctx, owner, repoName)
+	// Fetch repo from cache, update cache if missed
+	repoV4, err := o.GetRepoFromCache(ctx, repoName)
 	if err != nil {
-		var ghErr *github.ErrorResponse
-		if errors.As(err, &ghErr) {
-			if ghErr.Response.StatusCode == http.StatusNotModified {
-				return nil
-			}
-			if ghErr.Response.StatusCode == http.StatusNotFound {
-				log.Printf("[INFO] Removing repository %s/%s from state because it no longer exists in GitHub",
-					owner, repoName)
-				d.SetId("")
-				return nil
-			}
+		// If the repo does not exist, remove from state
+		if err.Error() == fmt.Sprintf("failed to fetch repository %s", repoName) {
+			log.Printf("[INFO] Removing repository %s/%s from state because it no longer exists in GitHub",
+				owner, repoName)
+			d.SetId("")
+			return nil
 		}
 		return diag.FromErr(err)
 	}
 
-	_ = d.Set("etag", resp.Header.Get("ETag"))
-	_ = d.Set("name", repoName)
-	_ = d.Set("description", repo.GetDescription())
-	_ = d.Set("primary_language", repo.GetLanguage())
-	_ = d.Set("homepage_url", repo.GetHomepage())
-	_ = d.Set("private", repo.GetPrivate())
-	_ = d.Set("visibility", repo.GetVisibility())
-	_ = d.Set("has_issues", repo.GetHasIssues())
-	_ = d.Set("has_discussions", repo.GetHasDiscussions())
-	_ = d.Set("has_projects", repo.GetHasProjects())
-	_ = d.Set("has_wiki", repo.GetHasWiki())
-	_ = d.Set("is_template", repo.GetIsTemplate())
-	_ = d.Set("full_name", repo.GetFullName())
-	_ = d.Set("default_branch", repo.GetDefaultBranch())
-	_ = d.Set("html_url", repo.GetHTMLURL())
-	_ = d.Set("ssh_clone_url", repo.GetSSHURL())
-	_ = d.Set("svn_url", repo.GetSVNURL())
-	_ = d.Set("git_clone_url", repo.GetGitURL())
-	_ = d.Set("http_clone_url", repo.GetCloneURL())
-	_ = d.Set("archived", repo.GetArchived())
-	_ = d.Set("topics", flattenStringList(repo.Topics))
-	_ = d.Set("node_id", repo.GetNodeID())
-	_ = d.Set("repo_id", repo.GetID())
+	// Set standard repository attributes
+	_ = d.Set("name", repoV4.Name)
+	_ = d.Set("description", repoV4.Description)
+	_ = d.Set("primary_language", repoV4.PrimaryLanguage)
+	_ = d.Set("homepage_url", repoV4.HomepageURL)
+	_ = d.Set("private", repoV4.IsPrivate)
+	_ = d.Set("visibility", repoV4.Visibility)
+	_ = d.Set("has_issues", repoV4.HasIssues)
+	_ = d.Set("has_discussions", repoV4.HasDiscussions)
+	_ = d.Set("has_projects", repoV4.HasProjects)
+	_ = d.Set("has_wiki", repoV4.HasWiki)
+	_ = d.Set("is_template", repoV4.IsTemplate)
+	_ = d.Set("full_name", fmt.Sprintf("%s/%s", owner, repoV4.Name))
+	_ = d.Set("default_branch", repoV4.DefaultBranch)
+	_ = d.Set("html_url", repoV4.HTMLURL)
+	_ = d.Set("ssh_clone_url", repoV4.SSHURL)
+	_ = d.Set("svn_url", repoV4.SVNURL)
+	_ = d.Set("git_clone_url", repoV4.GitURL)
+	_ = d.Set("http_clone_url", repoV4.HTMLURL)
+	_ = d.Set("archived", repoV4.IsArchived)
+	_ = d.Set("topics", repoV4.Topics)
+	_ = d.Set("node_id", "") // optional: cache if needed
+	_ = d.Set("repo_id", "") // optional: cache if needed
 
-	// TODO: Validate this behavior as I can see these fields being returned even when archived
-	// GitHub API doesn't respond following parameters when repository is archived
-	if !d.Get("archived").(bool) {
-		_ = d.Set("allow_auto_merge", repo.GetAllowAutoMerge())
-		_ = d.Set("allow_merge_commit", repo.GetAllowMergeCommit())
-		_ = d.Set("allow_rebase_merge", repo.GetAllowRebaseMerge())
-		_ = d.Set("allow_squash_merge", repo.GetAllowSquashMerge())
-		_ = d.Set("allow_update_branch", repo.GetAllowUpdateBranch())
-		_ = d.Set("allow_forking", repo.GetAllowForking())
-		_ = d.Set("delete_branch_on_merge", repo.GetDeleteBranchOnMerge())
-		_ = d.Set("web_commit_signoff_required", repo.GetWebCommitSignoffRequired())
-		_ = d.Set("has_downloads", repo.GetHasDownloads())
-		_ = d.Set("merge_commit_message", repo.GetMergeCommitMessage())
-		_ = d.Set("merge_commit_title", repo.GetMergeCommitTitle())
-		_ = d.Set("squash_merge_commit_message", repo.GetSquashMergeCommitMessage())
-		_ = d.Set("squash_merge_commit_title", repo.GetSquashMergeCommitTitle())
+	// Only set these if repo is not archived
+	if !repoV4.IsArchived {
+		_ = d.Set("allow_auto_merge", repoV4.AllowAutoMerge)
+		_ = d.Set("allow_merge_commit", repoV4.AllowMergeCommit)
+		_ = d.Set("allow_rebase_merge", repoV4.AllowRebaseMerge)
+		_ = d.Set("allow_squash_merge", repoV4.AllowSquashMerge)
+		_ = d.Set("allow_update_branch", repoV4.AllowUpdateBranch)
+		_ = d.Set("allow_forking", repoV4.AllowForking)
+		_ = d.Set("delete_branch_on_merge", repoV4.DeleteBranchOnMerge)
+		_ = d.Set("web_commit_signoff_required", repoV4.WebCommitSignoffRequired)
+		_ = d.Set("merge_commit_message", repoV4.MergeCommitMessage)
+		_ = d.Set("merge_commit_title", repoV4.MergeCommitTitle)
+		_ = d.Set("squash_merge_commit_message", repoV4.SquashMergeCommitMessage)
+		_ = d.Set("squash_merge_commit_title", repoV4.SquashMergeCommitTitle)
 	}
 
-	if repo.GetHasPages() {
-		pages, _, err := client.Repositories.GetPagesInfo(ctx, owner, repoName)
-		if err != nil {
-			return diag.FromErr(err)
-		}
-		if err := d.Set("pages", flattenPages(pages)); err != nil {
-			return diag.Errorf("error setting pages: %s", err.Error())
-		}
-	}
+	// GitHub Pages
+	_ = d.Set("has_pages", repoV4.HasPages)
 
-	// Set fork information if this is a fork
-	if repo.GetFork() {
+	// Fork info
+	if repoV4.Fork {
 		_ = d.Set("fork", "true")
-
-		// If the repository has parent information, set the source details
-		if repo.Parent != nil {
-			_ = d.Set("source_owner", repo.Parent.GetOwner().GetLogin())
-			_ = d.Set("source_repo", repo.Parent.GetName())
-		}
+		_ = d.Set("source_owner", repoV4.ParentOwner)
+		_ = d.Set("source_repo", repoV4.ParentName)
 	} else {
 		_ = d.Set("fork", "false")
 		_ = d.Set("source_owner", "")
 		_ = d.Set("source_repo", "")
 	}
 
-	if repo.TemplateRepository != nil {
-		if err = d.Set("template", []any{
+	// Template repository info
+	if repoV4.TemplateRepo != "" {
+		_ = d.Set("template", []any{
 			map[string]any{
-				"owner":      repo.TemplateRepository.Owner.Login,
-				"repository": repo.TemplateRepository.Name,
+				"owner":      repoV4.TemplateOwner,
+				"repository": repoV4.TemplateRepo,
 			},
-		}); err != nil {
-			return diag.FromErr(err)
-		}
+		})
 	} else {
-		if err = d.Set("template", []any{}); err != nil {
-			return diag.FromErr(err)
-		}
+		_ = d.Set("template", []any{})
 	}
 
-	if repo.GetSecurityAndAnalysis() != nil {
-		vulnerabilityAlerts, _, err := client.Repositories.GetVulnerabilityAlerts(ctx, owner, repoName)
-		if err != nil {
-			return diag.Errorf("error reading repository vulnerability alerts: %s", err.Error())
-		}
-		if err = d.Set("vulnerability_alerts", vulnerabilityAlerts); err != nil {
-			return diag.FromErr(err)
-		}
-
-		if err = d.Set("security_and_analysis", flattenSecurityAndAnalysis(repo.SecurityAndAnalysis)); err != nil {
-			return diag.FromErr(err)
-		}
+	// Security & vulnerability alerts
+	if repoV4.SecurityAnalysis != nil {
+		_ = d.Set("vulnerability_alerts", repoV4.VulnerabilityAlerts)
+		_ = d.Set("security_and_analysis", repoV4.SecurityAnalysis)
 	}
 
 	return nil
 }
-
 func resourceGithubRepositoryUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	// Can only update a repository if it is not archived or the update is to
 	// archive the repository (unarchiving is not supported by the GitHub API)
@@ -1033,6 +1003,8 @@ func resourceGithubRepositoryDelete(ctx context.Context, d *schema.ResourceData,
 	owner := meta.(*Owner).name
 	ctx = context.WithValue(ctx, ctxId, d.Id())
 
+	o := meta.(*Owner) // get Owner object to access repoCache
+
 	archiveOnDestroy := d.Get("archive_on_destroy").(bool)
 	if archiveOnDestroy {
 		if d.Get("archived").(bool) {
@@ -1047,13 +1019,26 @@ func resourceGithubRepositoryDelete(ctx context.Context, d *schema.ResourceData,
 			repoReq.WebCommitSignoffRequired = nil
 			log.Printf("[DEBUG] Archiving repository on delete: %s/%s", owner, repoName)
 			_, _, err := client.Repositories.Edit(ctx, owner, repoName, repoReq)
-			return diag.FromErr(err)
+			if err != nil {
+				return diag.FromErr(err)
+			}
+			// Repo still exists in GitHub → leave in cache
+			return nil
 		}
 	}
 
 	log.Printf("[DEBUG] Deleting repository: %s/%s", owner, repoName)
 	_, err := client.Repositories.Delete(ctx, owner, repoName)
-	return diag.FromErr(err)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
+	// ✅ Remove repo from cache so subsequent read does not think it exists
+	if o.repoCache != nil {
+		delete(o.repoCache, repoName)
+	}
+
+	return nil
 }
 
 func resourceGithubRepositoryImport(ctx context.Context, d *schema.ResourceData, meta any) ([]*schema.ResourceData, error) {

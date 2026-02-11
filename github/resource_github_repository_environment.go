@@ -118,106 +118,128 @@ func resourceGithubRepositoryEnvironmentCreate(ctx context.Context, d *schema.Re
 	}
 	d.SetId(id)
 
-	return nil
+	// Populate cache & Terraform state by calling Read
+	return resourceGithubRepositoryEnvironmentRead(ctx, d, meta)
 }
 
 func resourceGithubRepositoryEnvironmentRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
-	client := meta.(*Owner).v3client
-	owner := meta.(*Owner).name
+	o := meta.(*Owner)
 
 	repoName, envNamePart, err := parseID2(d.Id())
 	if err != nil {
 		return diag.FromErr(err)
 	}
-
 	envName := unescapeIDPart(envNamePart)
 
-
 	// ---------- manual insert start ----------
-
-		// 1️⃣ Check if repository exists
-	repo, resp, _ := client.Repositories.Get(ctx, owner, repoName)
-	if resp == nil || resp.StatusCode == 404 {
+	// Check repository existence and archived status using repo cache
+	repo, err := o.GetRepoFromCache(ctx, repoName)
+	if err != nil {
 		log.Printf("[INFO] Removing repository environment %s from state because repository %s does not exist", d.Id(), repoName)
-		d.SetId("") // delete from state
+		d.SetId("") // remove from state
 		return nil
 	}
-
-	// 2️⃣ Check if repository is archived
-	if repo.GetArchived() {
+	if repo.IsArchived {
 		log.Printf("[INFO] Removing repository environment %s from state because repository %s is archived", d.Id(), repoName)
-		d.SetId("") // delete from state
+		d.SetId("") // remove from state
 		return nil
 	}
-
 	// ---------- manual insert end ----------
 
-	env, _, err := client.Repositories.GetEnvironment(ctx, owner, repoName, url.PathEscape(envName))
+	// ---------- fetch environment from cache ----------
+	envData, err := o.GetEnvironmentFromCache(ctx, repoName, envName)
 	if err != nil {
-		var ghErr *github.ErrorResponse
-		if errors.As(err, &ghErr) {
-			if ghErr.Response.StatusCode == http.StatusNotFound {
-				log.Printf("[INFO] Removing repository environment %s from state because it no longer exists in GitHub",
-					d.Id())
+		// Rare cache miss: fallback to v3 API
+		client := o.v3client
+		owner := o.name
+
+		envV3, _, err := client.Repositories.GetEnvironment(ctx, owner, repoName, url.PathEscape(envName))
+		if err != nil {
+			var ghErr *github.ErrorResponse
+			if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
+				log.Printf("[INFO] Removing repository environment %s from state because it no longer exists in GitHub", d.Id())
 				d.SetId("")
 				return nil
 			}
+			return diag.FromErr(err)
 		}
-		return diag.FromErr(err)
-	}
 
-	_ = d.Set("repository", repoName)
-	_ = d.Set("environment", envName)
-	_ = d.Set("wait_timer", nil)
-	_ = d.Set("can_admins_bypass", env.CanAdminsBypass)
-
-	for _, pr := range env.ProtectionRules {
-		switch *pr.Type {
-		case "wait_timer":
-			if err = d.Set("wait_timer", pr.WaitTimer); err != nil {
-				return diag.FromErr(err)
-			}
-
-		case "required_reviewers":
-			teams := make([]int64, 0)
-			users := make([]int64, 0)
-
-			for _, r := range pr.Reviewers {
+		// Map v3 environment into EnvV4Data
+		reviewers := []EnvReviewer{}
+		for _, r := range envV3.Reviewers {
+			if r.Type != nil {
 				switch *r.Type {
 				case "Team":
-					if r.Reviewer.(*github.Team).ID != nil {
-						teams = append(teams, *r.Reviewer.(*github.Team).ID)
+					if r.ID != nil {
+						reviewers = append(reviewers, EnvReviewer{Type: "Team", ID: *r.ID})
 					}
 				case "User":
-					if r.Reviewer.(*github.User).ID != nil {
-						users = append(users, *r.Reviewer.(*github.User).ID)
+					if r.ID != nil {
+						reviewers = append(reviewers, EnvReviewer{Type: "User", ID: *r.ID})
 					}
 				}
 			}
-			if err = d.Set("reviewers", []any{
-				map[string]any{
-					"teams": teams,
-					"users": users,
-				},
-			}); err != nil {
-				return diag.FromErr(err)
-			}
+		}
 
-			if err = d.Set("prevent_self_review", pr.PreventSelfReview); err != nil {
-				return diag.FromErr(err)
+		deployPolicy := &BranchPolicyV4{}
+		if envV3.DeploymentBranchPolicy != nil {
+			deployPolicy = &BranchPolicyV4{
+				ProtectedBranches:    envV3.DeploymentBranchPolicy.GetProtectedBranches(),
+				CustomBranchPolicies: envV3.DeploymentBranchPolicy.GetCustomBranchPolicies(),
 			}
 		}
+
+		envData = &EnvV4Data{
+			Name:                   envV3.GetName(),
+			CanAdminsBypass:        envV3.GetCanAdminsBypass(), // safe getter
+			WaitTimer:              0,                          // default, v3 does not provide directly
+			PreventSelfReview:      false,                      // default, cannot get from v3
+			Reviewers:              reviewers,
+			DeploymentBranchPolicy: deployPolicy,
+			ProtectionRules:        []ProtectionRuleV4{}, // default empty
+		}
+
+		// Add to v4 cache
+		if o.envCache == nil {
+			o.envCache = make(map[string]map[string]*EnvV4Data)
+		}
+		if o.envCache[repoName] == nil {
+			o.envCache[repoName] = make(map[string]*EnvV4Data)
+		}
+		o.envCache[repoName][envName] = envData
 	}
 
-	if env.DeploymentBranchPolicy != nil {
-		if err = d.Set("deployment_branch_policy", []any{
-			map[string]any{
-				"protected_branches":     env.DeploymentBranchPolicy.ProtectedBranches,
-				"custom_branch_policies": env.DeploymentBranchPolicy.CustomBranchPolicies,
-			},
-		}); err != nil {
-			return diag.FromErr(err)
+	// ---------- populate Terraform state ----------
+	_ = d.Set("repository", repoName)
+	_ = d.Set("environment", envName)
+	_ = d.Set("wait_timer", envData.WaitTimer)
+	_ = d.Set("can_admins_bypass", envData.CanAdminsBypass)
+	_ = d.Set("prevent_self_review", envData.PreventSelfReview)
+
+	// Set reviewers
+	if len(envData.Reviewers) > 0 {
+		teams := []int64{}
+		users := []int64{}
+		for _, r := range envData.Reviewers {
+			switch r.Type {
+			case "Team":
+				teams = append(teams, r.ID)
+			case "User":
+				users = append(users, r.ID)
+			}
 		}
+		_ = d.Set("reviewers", []any{map[string]any{
+			"teams": teams,
+			"users": users,
+		}})
+	}
+
+	// Deployment branch policy
+	if envData.DeploymentBranchPolicy != nil {
+		_ = d.Set("deployment_branch_policy", []any{map[string]any{
+			"protected_branches":     envData.DeploymentBranchPolicy.ProtectedBranches,
+			"custom_branch_policies": envData.DeploymentBranchPolicy.CustomBranchPolicies,
+		}})
 	} else {
 		_ = d.Set("deployment_branch_policy", []any{})
 	}
@@ -263,12 +285,14 @@ func resourceGithubRepositoryEnvironmentUpdate(ctx context.Context, d *schema.Re
 	}
 	d.SetId(id)
 
-	return nil
+	// Populate cache & Terraform state by calling Read
+	return resourceGithubRepositoryEnvironmentRead(ctx, d, meta)
 }
 
 func resourceGithubRepositoryEnvironmentDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*Owner).v3client
 	owner := meta.(*Owner).name
+	o := meta.(*Owner) // needed to access envCache
 
 	repoName, envNamePart, err := parseID2(d.Id())
 	if err != nil {
@@ -299,6 +323,11 @@ func resourceGithubRepositoryEnvironmentDelete(ctx context.Context, d *schema.Re
 	_, err = client.Repositories.DeleteEnvironment(ctx, owner, repoName, url.PathEscape(envName))
 	if err != nil {
 		return diag.FromErr(deleteResourceOn404AndSwallow304OtherwiseReturnError(err, d, "environment (%s)", envName))
+	}
+
+	// ✅ Remove from environment cache only
+	if o.envCache != nil && o.envCache[repoName] != nil {
+		delete(o.envCache[repoName], envName)
 	}
 
 	return nil

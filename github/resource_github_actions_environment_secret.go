@@ -180,97 +180,111 @@ func resourceGithubActionsEnvironmentSecretCreate(ctx context.Context, d *schema
 		}
 	}
 
-	return nil
+	return resourceGithubActionsEnvironmentSecretRead(ctx, d, m)
 }
 
 func resourceGithubActionsEnvironmentSecretRead(ctx context.Context, d *schema.ResourceData, m any) diag.Diagnostics {
-	meta := m.(*Owner)
-	client := meta.v3client
+	o := m.(*Owner)
 
 	repoName := d.Get("repository").(string)
-	repoID := d.Get("repository_id").(int)
 	envName := d.Get("environment").(string)
 	secretName := d.Get("secret_name").(string)
 
-	//manual insert----begins------------------
-// Check if repository exists and is not archived
-// ---------- manual insert start ----------
+	// ---------- manual insert start ----------
+	// Check repository existence and archived status using repo cache
+	repo, ok := o.repoCache[repoName]
+	if !ok {
+		log.Printf("[INFO] Removing environment secret %s from state because repository %s does not exist in cache", d.Id(), repoName)
+		d.SetId("")
+		return nil
+	}
+	if repo.IsArchived {
+		log.Printf("[INFO] Removing environment secret %s from state because repository %s is archived", d.Id(), repoName)
+		d.SetId("")
+		return nil
+	}
 
-// 1️⃣ Check if repository exists and is not archived
-repo, _, err := client.Repositories.Get(ctx, meta.name, repoName)
-if err != nil {
-    var ghErr *github.ErrorResponse
-    if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
-        log.Printf("[INFO] Removing environment secret %s from state because repository %s does not exist", d.Id(), repoName)
-        d.SetId("")
-        return nil
-    }
-    return diag.FromErr(err)
-}
+	// Check environment exists in env cache
+	envDataMap, ok := o.envCache[repoName]
+	if !ok || envDataMap[envName] == nil {
+		log.Printf("[INFO] Removing environment secret %s from state because environment %s does not exist in cache", d.Id(), envName)
+		d.SetId("")
+		return nil
+	}
+	// ---------- manual insert end ----------
 
-if repo.GetArchived() {
-    log.Printf("[INFO] Removing environment secret %s from state because repository %s is archived", d.Id(), repoName)
-    d.SetId("")
-    return nil
-}
+	// ---------- fetch secret from v4 cache ----------
+	var secretData *EnvSecretV4Data
+	if o.envSecretCache != nil && o.envSecretCache[repoName] != nil &&
+		o.envSecretCache[repoName][envName] != nil &&
+		o.envSecretCache[repoName][envName][secretName] != nil {
 
-repoID = int(repo.GetID()) // keep using existing variable
+		secretData = o.envSecretCache[repoName][envName][secretName]
+	} else {
+		// ---------- v3 fallback ----------
+		client := o.v3client
+		// Get repository ID from v3
+		repoV3, _, err := client.Repositories.Get(ctx, o.name, repoName)
+		if err != nil {
+			var ghErr *github.ErrorResponse
+			if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
+				log.Printf("[INFO] Removing environment secret %s from state because repository %s does not exist", d.Id(), repoName)
+				d.SetId("")
+				return nil
+			}
+			return diag.FromErr(err)
+		}
+		repoID := int(repoV3.GetID())
 
-
-
-// 3️⃣ Check if environment exists by listing secrets
-escapedEnv := url.PathEscape(envName)
-
-_, _, err = client.Actions.ListEnvSecrets(ctx, repoID, escapedEnv, &github.ListOptions{PerPage: 1})
-if err != nil {
-    var ghErr *github.ErrorResponse
-    if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
-        log.Printf("[INFO] Removing environment secret %s from state because environment %s does not exist", d.Id(), envName)
-        d.SetId("")
-        return nil
-    }
-    return diag.FromErr(err)
-}
-// ---------- manual insert end ----------
-
-	secret, _, err := client.Actions.GetEnvSecret(ctx, repoID, url.PathEscape(envName), secretName)
-	if err != nil {
-		var ghErr *github.ErrorResponse
-		if errors.As(err, &ghErr) {
-			if ghErr.Response.StatusCode == http.StatusNotFound {
+		escapedEnv := url.PathEscape(envName)
+		secretV3, _, err := client.Actions.GetEnvSecret(ctx, repoID, escapedEnv, secretName)
+		if err != nil {
+			var ghErr *github.ErrorResponse
+			if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
 				log.Printf("[INFO] Removing environment secret %s from state because it no longer exists in GitHub", d.Id())
 				d.SetId("")
 				return nil
 			}
-		}
-		return diag.FromErr(err)
-	}
-
-	id, err := buildID(repoName, escapeIDPart(envName), secretName)
-	if err != nil {
-		return diag.FromErr(err)
-	}
-	d.SetId(id)
-
-	// Due to the eventually consistent behavior of this API we may not get created_at/updated_at
-	// values on the first read after creation, so we only set them here if they are not already set.
-	if len(d.Get("created_at").(string)) == 0 {
-		if err = d.Set("created_at", secret.CreatedAt.String()); err != nil {
 			return diag.FromErr(err)
 		}
-	}
-	if len(d.Get("updated_at").(string)) == 0 {
-		if err = d.Set("updated_at", secret.UpdatedAt.String()); err != nil {
-			return diag.FromErr(err)
+
+		// Map v3 secret to v4 structure
+		secretData = &EnvSecretV4Data{
+			Name:      secretName,
+			CreatedAt: secretV3.CreatedAt.String(),
+			UpdatedAt: secretV3.UpdatedAt.String(),
+			// Visibility, SelectedTeams, SelectedRepos cannot be fetched from v3 API directly
+			Visibility:    "", 
+			SelectedTeams: []string{},
+			SelectedRepos: []string{},
 		}
+
+		// Initialize v4 cache if needed
+		if o.envSecretCache == nil {
+			o.envSecretCache = make(map[string]map[string]map[string]*EnvSecretV4Data)
+		}
+		if o.envSecretCache[repoName] == nil {
+			o.envSecretCache[repoName] = make(map[string]map[string]*EnvSecretV4Data)
+		}
+		if o.envSecretCache[repoName][envName] == nil {
+			o.envSecretCache[repoName][envName] = make(map[string]*EnvSecretV4Data)
+		}
+		o.envSecretCache[repoName][envName][secretName] = secretData
 	}
-	if err = d.Set("remote_updated_at", secret.UpdatedAt.String()); err != nil {
-		return diag.FromErr(err)
-	}
+
+	// ---------- populate Terraform state ----------
+	d.SetId(d.Get("id").(string)) // preserve existing ID or rebuild
+	_ = d.Set("repository", repoName)
+	_ = d.Set("environment", envName)
+	_ = d.Set("secret_name", secretData.Name)
+	_ = d.Set("created_at", secretData.CreatedAt)
+	_ = d.Set("updated_at", secretData.UpdatedAt)
+	_ = d.Set("visibility", secretData.Visibility)
+	_ = d.Set("selected_teams", secretData.SelectedTeams)
+	_ = d.Set("selected_repositories", secretData.SelectedRepos)
 
 	return nil
 }
-
 func resourceGithubActionsEnvironmentSecretUpdate(ctx context.Context, d *schema.ResourceData, m any) diag.Diagnostics {
 	meta := m.(*Owner)
 	client := meta.v3client
@@ -382,29 +396,82 @@ func resourceGithubActionsEnvironmentSecretUpdate(ctx context.Context, d *schema
 		}
 	}
 
-	return nil
+	return resourceGithubActionsEnvironmentSecretRead(ctx, d, m)
 }
 
 func resourceGithubActionsEnvironmentSecretDelete(ctx context.Context, d *schema.ResourceData, m any) diag.Diagnostics {
-	meta := m.(*Owner)
-	client := meta.v3client
+	o := m.(*Owner)
+	client := o.v3client
 
-	repoID := d.Get("repository_id").(int)
+	repoName := d.Get("repository").(string)
 	envName := d.Get("environment").(string)
 	secretName := d.Get("secret_name").(string)
 
+	// ---------- manual insert start ----------
+	// 1️⃣ Check if repository exists and is not archived using repo cache
+	repo, err := o.GetRepoFromCache(ctx, repoName)
+	if err != nil {
+		log.Printf("[INFO] Removing environment secret %s from state because repository %s does not exist", d.Id(), repoName)
+		d.SetId("") // remove from state
+		return nil
+	}
+	if repo.IsArchived {
+		log.Printf("[INFO] Removing environment secret %s from state because repository %s is archived", d.Id(), repoName)
+		d.SetId("") // remove from state
+		return nil
+	}
+
+	// 2️⃣ Check if environment exists using env cache
+	if o.envCache == nil || o.envCache[repoName] == nil || o.envCache[repoName][envName] == nil {
+		log.Printf("[INFO] Removing environment secret %s from state because environment %s does not exist in repo %s", d.Id(), envName, repoName)
+		d.SetId("") // remove from state
+		return nil
+	}
+	// ---------- manual insert end ----------
+
+	// ---------- original delete logic using v3 to get repo ID ----------
+	repoObj, _, err := client.Repositories.Get(ctx, o.name, repoName)
+	if err != nil {
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
+			log.Printf("[INFO] Repository %s deleted, removing secret %s from state", repoName, secretName)
+			d.SetId("")
+			return nil
+		}
+		return diag.FromErr(err)
+	}
+	repoID := int(repoObj.GetID())
+
 	log.Printf("[INFO] Deleting actions environment secret: %s", d.Id())
-	//replace with manual insert to handle 404s gracefully and remove from state if already deleted
-	_, err := client.Actions.DeleteEnvSecret(ctx, repoID, url.PathEscape(envName), secretName)
-if err != nil {
-    var ghErr *github.ErrorResponse
-    if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
-        log.Printf("[INFO] Environment secret %s already deleted", d.Id())
-        d.SetId("")
-        return nil
-    }
-    return diag.FromErr(err)
-}//manual
+	_, err = client.Actions.DeleteEnvSecret(ctx, repoID, url.PathEscape(envName), secretName)
+	if err != nil {
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response.StatusCode == http.StatusNotFound {
+			log.Printf("[INFO] Environment secret %s already deleted in GitHub", d.Id())
+		} else {
+			return diag.FromErr(err)
+		}
+	}
+
+	// ---------- remove from v4 cache ----------
+	if o.envSecretCache != nil &&
+		o.envSecretCache[repoName] != nil &&
+		o.envSecretCache[repoName][envName] != nil {
+		delete(o.envSecretCache[repoName][envName], secretName)
+		log.Printf("[INFO] Removed environment secret %s from cache for repo %s, env %s", secretName, repoName, envName)
+
+		// cleanup empty maps
+		if len(o.envSecretCache[repoName][envName]) == 0 {
+			delete(o.envSecretCache[repoName], envName)
+		}
+		if len(o.envSecretCache[repoName]) == 0 {
+			delete(o.envSecretCache, repoName)
+		}
+	}
+
+	// ---------- remove from Terraform state ----------
+	d.SetId("")
+
 	return nil
 }
 

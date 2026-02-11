@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"sync"
 
 	"github.com/google/go-github/v82/github"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/logging"
@@ -29,6 +30,7 @@ type Config struct {
 	ParallelRequests bool
 }
 
+
 type Owner struct {
 	name           string
 	id             int64
@@ -36,6 +38,20 @@ type Owner struct {
 	v4client       *githubv4.Client
 	StopContext    context.Context
 	IsOrganization bool
+	// repoCache is a cache for repository data, keyed by repository name. It is populated on demand when GetRepoV4 is called.
+    repoCache     map[string]*RepoV4Data
+    repoCacheOnce sync.Once
+
+	// Environment cache: map[repoName]map[envName]*github.CreateUpdateEnvironment
+    envCache    map[string]map[string]*EnvV4Data // repo -> env name -> env data
+    envCacheOnce sync.Once
+	// Team repository cache: map[teamID]map[repoName]*TeamRepoV4Data
+    teamRepoCache     map[int64]map[string]*TeamRepoV4Data
+	teamRepoCacheOnce sync.Once
+// Secret cache: map[repoName]map[secretName]*RepoSecretV4Data
+	envSecretCache     map[string]map[string]map[string]*EnvSecretV4Data // repo -> env -> secret name -> secret
+	envSecretCacheOnce sync.Once
+
 }
 
 const (
