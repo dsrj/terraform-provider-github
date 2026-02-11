@@ -263,7 +263,7 @@ func resourceGithubTeamRepositoryDelete(d *schema.ResourceData, meta any) error 
 	orgName := meta.(*Owner).name
 	ctx := context.WithValue(context.Background(), ctxId, d.Id())
 
-	resp, err := client.Teams.RemoveTeamRepoByID(ctx, orgId, teamId, orgName, repoName)
+	
 
 	//---------- manual insert start ----------
 	repo, _, repoErr := client.Repositories.Get(ctx, orgName, repoName)
@@ -282,6 +282,8 @@ func resourceGithubTeamRepositoryDelete(d *schema.ResourceData, meta any) error 
 		return nil
 	}
 	//---------- manual insert end ----------
+
+	resp, err := client.Teams.RemoveTeamRepoByID(ctx, orgId, teamId, orgName, repoName) // actual delete fucntion call
 
 	if resp.StatusCode == 404 {
 		log.Printf("[DEBUG] Failed to find team %s to delete for repo: %s.", teamIdString, repoName)
