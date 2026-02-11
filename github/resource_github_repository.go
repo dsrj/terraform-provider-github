@@ -824,7 +824,7 @@ func resourceGithubRepositoryRead(ctx context.Context, d *schema.ResourceData, m
 	_ = d.Set("git_clone_url", repoV4.GitURL)
 	_ = d.Set("http_clone_url", repoV4.HTMLURL)
 	_ = d.Set("archived", repoV4.IsArchived)
-	_ = d.Set("topics", repoV4.Topics)
+	//_ = d.Set("topics", repoV4.Topics)
 	_ = d.Set("node_id", "") // optional: cache if needed
 	_ = d.Set("repo_id", "") // optional: cache if needed
 
