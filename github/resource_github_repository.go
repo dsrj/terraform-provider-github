@@ -800,7 +800,7 @@ func resourceGithubRepositoryRead(ctx context.Context, d *schema.ResourceData, m
 		return nil
 	}
 
-	// If archived → remove from state (your custom logic)
+	// If archived → remove from state
 	if repoV4.IsArchived {
 		log.Printf("[INFO] Removing repository %s from state because it is archived", repoName)
 		d.SetId("")
@@ -814,54 +814,18 @@ func resourceGithubRepositoryRead(ctx context.Context, d *schema.ResourceData, m
 	_ = d.Set("description", repoV4.Description)
 	_ = d.Set("visibility", repoV4.Visibility)
 	_ = d.Set("private", repoV4.IsPrivate)
-	_ = d.Set("homepage_url", repoV4.HomepageURL)
-	_ = d.Set("default_branch", repoV4.DefaultBranch)
 
 	// -----------------------------
-	// Features
+	// Template repository
 	// -----------------------------
-	_ = d.Set("has_issues", repoV4.HasIssues)
-	_ = d.Set("has_projects", repoV4.HasProjects)
-	_ = d.Set("has_wiki", repoV4.HasWiki)
-	_ = d.Set("is_template", repoV4.IsTemplate)
-
-	// -----------------------------
-	// Merge & branch settings
-	// -----------------------------
-	
-
-	// -----------------------------
-	// Fork & parent
-	// -----------------------------
-	//_ = d.Set("fork", repoV4.Fork)
-
-	if repoV4.ParentOwner != "" {
-		parent := []interface{}{
-			map[string]interface{}{
-				"owner": repoV4.ParentOwner,
-				"name":  repoV4.ParentName,
-			},
-		}
-		_ = d.Set("parent", parent)
-	}
-
-	if repoV4.TemplateOwner != "" {
+	if repoV4.TemplateRepo != "" {
 		template := []interface{}{
 			map[string]interface{}{
-				"owner": repoV4.TemplateOwner,
-				"name":  repoV4.TemplateRepo,
+				"name": repoV4.TemplateRepo,
 			},
 		}
 		_ = d.Set("template", template)
 	}
-
-	// -----------------------------
-	// URLs
-	// -----------------------------
-	_ = d.Set("html_url", repoV4.HTMLURL)
-	_ = d.Set("ssh_clone_url", repoV4.SSHURL)
-	_ = d.Set("git_clone_url", repoV4.GitURL)
-	_ = d.Set("svn_url", repoV4.SVNURL)
 
 	return diags
 }
