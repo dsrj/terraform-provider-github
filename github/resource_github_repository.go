@@ -599,7 +599,7 @@ func resourceGithubRepositoryObject(d *schema.ResourceData) *github.Repository {
 		AllowMergeCommit:         github.Ptr(d.Get("allow_merge_commit").(bool)),
 		AllowSquashMerge:         github.Ptr(d.Get("allow_squash_merge").(bool)),
 		AllowRebaseMerge:         github.Ptr(d.Get("allow_rebase_merge").(bool)),
-		AllowAutoMerge:           github.Ptr(d.Get("allow_auto_merge").(bool)),
+		//AllowAutoMerge:           github.Ptr(d.Get("allow_auto_merge").(bool)),
 		DeleteBranchOnMerge:      github.Ptr(d.Get("delete_branch_on_merge").(bool)),
 		WebCommitSignoffRequired: github.Ptr(d.Get("web_commit_signoff_required").(bool)),
 		AutoInit:                 github.Ptr(d.Get("auto_init").(bool)),
@@ -781,102 +781,89 @@ func resourceGithubRepositoryCreate(ctx context.Context, d *schema.ResourceData,
 // If the repository is not found, it removes it from the state. If there is an error fetching the repository, it returns the error.
 //replaced original read function with new one that uses cache and handles not found error by removing from state instead of returning an error
 
-func resourceGithubRepositoryRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
-	o := meta.(*Owner)
-	owner := o.name
+func resourceGithubRepositoryRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	metaOwner := meta.(*Owner)
 	repoName := d.Id()
 
-	// If provider unauthenticated, use owner from state
-	if explicitOwner, _, ok := resourceGithubParseFullName(d); ok && owner == "" {
-		owner = explicitOwner
-	}
-
-	// Fetch repo from cache, update cache if missed
-	repoV4, err := o.GetRepoFromCache(ctx, repoName)
+	// Fetch repository from V4 cache
+	repoV4, err := metaOwner.GetRepoFromCache(ctx, repoName)
 	if err != nil {
-		// If the repo does not exist, remove from state
-		if err.Error() == fmt.Sprintf("failed to fetch repository %s", repoName) {
-			log.Printf("[INFO] Removing repository %s/%s from state because it no longer exists in GitHub",
-				owner, repoName)
-			d.SetId("")
-			return nil
-		}
 		return diag.FromErr(err)
 	}
 
-	// Set standard repository attributes
+	// If repo does not exist → remove from state
+	if repoV4 == nil {
+		log.Printf("[INFO] Removing repository %s from state because it no longer exists", repoName)
+		d.SetId("")
+		return nil
+	}
+
+	// If archived → remove from state (your custom logic)
+	if repoV4.IsArchived {
+		log.Printf("[INFO] Removing repository %s from state because it is archived", repoName)
+		d.SetId("")
+		return nil
+	}
+
+	// -----------------------------
+	// Basic fields
+	// -----------------------------
 	_ = d.Set("name", repoV4.Name)
 	_ = d.Set("description", repoV4.Description)
-	_ = d.Set("primary_language", repoV4.PrimaryLanguage)
-	_ = d.Set("homepage_url", repoV4.HomepageURL)
-	_ = d.Set("private", repoV4.IsPrivate)
 	_ = d.Set("visibility", repoV4.Visibility)
+	_ = d.Set("private", repoV4.IsPrivate)
+	_ = d.Set("homepage_url", repoV4.HomepageURL)
+	_ = d.Set("default_branch", repoV4.DefaultBranch)
+
+	// -----------------------------
+	// Features
+	// -----------------------------
 	_ = d.Set("has_issues", repoV4.HasIssues)
-	_ = d.Set("has_discussions", repoV4.HasDiscussions)
 	_ = d.Set("has_projects", repoV4.HasProjects)
 	_ = d.Set("has_wiki", repoV4.HasWiki)
 	_ = d.Set("is_template", repoV4.IsTemplate)
-	_ = d.Set("full_name", fmt.Sprintf("%s/%s", owner, repoV4.Name))
-	_ = d.Set("default_branch", repoV4.DefaultBranch)
+
+	// -----------------------------
+	// Merge & branch settings
+	// -----------------------------
+	
+
+	// -----------------------------
+	// Fork & parent
+	// -----------------------------
+	_ = d.Set("fork", repoV4.Fork)
+
+	if repoV4.ParentOwner != "" {
+		parent := []interface{}{
+			map[string]interface{}{
+				"owner": repoV4.ParentOwner,
+				"name":  repoV4.ParentName,
+			},
+		}
+		_ = d.Set("parent", parent)
+	}
+
+	if repoV4.TemplateOwner != "" {
+		template := []interface{}{
+			map[string]interface{}{
+				"owner": repoV4.TemplateOwner,
+				"name":  repoV4.TemplateRepo,
+			},
+		}
+		_ = d.Set("template", template)
+	}
+
+	// -----------------------------
+	// URLs
+	// -----------------------------
 	_ = d.Set("html_url", repoV4.HTMLURL)
 	_ = d.Set("ssh_clone_url", repoV4.SSHURL)
-	_ = d.Set("svn_url", repoV4.SVNURL)
 	_ = d.Set("git_clone_url", repoV4.GitURL)
-	_ = d.Set("http_clone_url", repoV4.HTMLURL)
-	_ = d.Set("archived", repoV4.IsArchived)
-	//_ = d.Set("topics", repoV4.Topics)
-	_ = d.Set("node_id", "") // optional: cache if needed
-	_ = d.Set("repo_id", "") // optional: cache if needed
+	_ = d.Set("svn_url", repoV4.SVNURL)
 
-	// Only set these if repo is not archived
-	if !repoV4.IsArchived {
-		_ = d.Set("allow_auto_merge", repoV4.AllowAutoMerge)
-		_ = d.Set("allow_merge_commit", repoV4.AllowMergeCommit)
-		_ = d.Set("allow_rebase_merge", repoV4.AllowRebaseMerge)
-		_ = d.Set("allow_squash_merge", repoV4.AllowSquashMerge)
-		_ = d.Set("allow_update_branch", repoV4.AllowUpdateBranch)
-		_ = d.Set("allow_forking", repoV4.AllowForking)
-		_ = d.Set("delete_branch_on_merge", repoV4.DeleteBranchOnMerge)
-		_ = d.Set("web_commit_signoff_required", repoV4.WebCommitSignoffRequired)
-		_ = d.Set("merge_commit_message", repoV4.MergeCommitMessage)
-		_ = d.Set("merge_commit_title", repoV4.MergeCommitTitle)
-		_ = d.Set("squash_merge_commit_message", repoV4.SquashMergeCommitMessage)
-		_ = d.Set("squash_merge_commit_title", repoV4.SquashMergeCommitTitle)
-	}
-
-	// GitHub Pages
-	_ = d.Set("has_pages", repoV4.HasPages)
-
-	// Fork info
-	if repoV4.Fork {
-		_ = d.Set("fork", "true")
-		_ = d.Set("source_owner", repoV4.ParentOwner)
-		_ = d.Set("source_repo", repoV4.ParentName)
-	} else {
-		_ = d.Set("fork", "false")
-		_ = d.Set("source_owner", "")
-		_ = d.Set("source_repo", "")
-	}
-
-	// Template repository info
-	if repoV4.TemplateRepo != "" {
-		_ = d.Set("template", []any{
-			map[string]any{
-				"owner":      repoV4.TemplateOwner,
-				"repository": repoV4.TemplateRepo,
-			},
-		})
-	} else {
-		_ = d.Set("template", []any{})
-	}
-
-	// Security & vulnerability alerts
-	if repoV4.SecurityAnalysis != nil {
-		_ = d.Set("vulnerability_alerts", repoV4.VulnerabilityAlerts)
-		_ = d.Set("security_and_analysis", repoV4.SecurityAnalysis)
-	}
-
-	return nil
+	return diags
 }
 func resourceGithubRepositoryUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	// Can only update a repository if it is not archived or the update is to
