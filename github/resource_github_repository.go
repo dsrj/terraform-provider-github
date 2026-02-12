@@ -833,7 +833,7 @@ func resourceGithubRepositoryRead(ctx context.Context, d *schema.ResourceData, m
 	// -----------------------------
 	// Fork & parent
 	// -----------------------------
-	_ = d.Set("fork", repoV4.Fork)
+	//_ = d.Set("fork", repoV4.Fork)
 
 	if repoV4.ParentOwner != "" {
 		parent := []interface{}{

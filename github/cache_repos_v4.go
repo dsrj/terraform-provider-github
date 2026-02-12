@@ -22,7 +22,7 @@ type RepoV4Data struct {
 	HasProjects     bool
 	HasWiki         bool
 	IsTemplate      bool
-	Fork            bool
+	//Fork            bool
 	ParentOwner     string
 	ParentName      string
 	TemplateOwner   string
@@ -65,7 +65,7 @@ func (o *Owner) loadAllReposV4(ctx context.Context) error {
 						HasWiki     bool `graphql:"hasWikiEnabled"`
 
 						IsTemplate bool
-						Fork       bool
+						//Fork       bool
 
 						Parent struct {
 							Owner struct {
@@ -124,7 +124,7 @@ func (o *Owner) loadAllReposV4(ctx context.Context) error {
 					HasProjects:     r.HasProjects,
 					HasWiki:         r.HasWiki,
 					IsTemplate:      r.IsTemplate,
-					Fork:            r.Fork,
+					//Fork:            r.Fork,
 					ParentOwner:     r.Parent.Owner.Login,
 					ParentName:      r.Parent.Name,
 					TemplateOwner:   r.TemplateRepository.Owner.Login,
@@ -187,7 +187,7 @@ func (o *Owner) GetRepoFromCache(ctx context.Context, name string) (*RepoV4Data,
 			HasWiki     bool `graphql:"hasWikiEnabled"`
 
 			IsTemplate bool
-			Fork       bool
+			//Fork       bool
 
 			Parent struct {
 				Owner struct {
@@ -235,7 +235,7 @@ func (o *Owner) GetRepoFromCache(ctx context.Context, name string) (*RepoV4Data,
 		HasProjects:     query.Repository.HasProjects,
 		HasWiki:         query.Repository.HasWiki,
 		IsTemplate:      query.Repository.IsTemplate,
-		Fork:            query.Repository.Fork,
+		//Fork:            query.Repository.Fork,
 		ParentOwner:     query.Repository.Parent.Owner.Login,
 		ParentName:      query.Repository.Parent.Name,
 		TemplateOwner:   query.Repository.TemplateRepository.Owner.Login,
