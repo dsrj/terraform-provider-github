@@ -222,7 +222,7 @@ func (o *Owner) GetRepoFromCache(ctx context.Context, name string) (*RepoV4Data,
 			Visibility               githubv4.RepositoryVisibility
 			IsArchived               bool
 			IsPrivate                bool
-			Topics                   []string
+			//Topics                   []string
 			DefaultBranchRef struct {
 				Name string
 			} `graphql:"defaultBranchRef"`
